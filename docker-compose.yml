@@ -1,0 +1,34 @@
+services:
+  websocket-server:
+    build: .
+    ports:
+      - "3100:3100"
+    environment:
+      - NODE_ENV=production
+      - PORT=3100
+      - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:password@host.docker.internal:5432/websocket_db}
+      - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost:3000}
+      - JWT_SECRET=${JWT_SECRET:-your-development-secret-key}
+      - LOG_LEVEL=info
+      - SKIP_DB_AUTH=${SKIP_DB_AUTH:-false}
+    # For development: uncomment the volumes to enable hot reload
+    # volumes:
+    #   - .:/usr/src/app
+    #   - /usr/src/app/node_modules
+    restart: unless-stopped
+
+# Redis is not required for the WebSocket server
+# The server uses in-memory storage which is sufficient for most use cases
+# Uncomment the Redis service below if you need multi-instance scaling
+
+# redis:
+#   image: redis:7-alpine
+#   ports:
+#     - "6379:6379"
+#   volumes:
+#     - redis_data:/data
+#   command: redis-server --appendonly yes
+#   restart: unless-stopped
+
+# volumes:
+#   redis_data:
