@@ -329,11 +329,16 @@ app.use('/users', usersRouter);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
+  res.json({
+    status: 'ok',
     timestamp: Date.now(),
-    connections: io.engine.clientsCount 
+    connections: io.engine.clientsCount
   });
+});
+
+// HEAD endpoint for health check (for CORS compatibility)
+app.head('/health', (req, res) => {
+  res.status(200).end();
 });
 
 // catch 404 and forward to error handler

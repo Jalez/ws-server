@@ -18,8 +18,9 @@ echo ""
 
 # Check if containers are running
 if docker-compose ps | grep -q "Up"; then
-    echo "🏗️  Restarting running containers..."
-    docker-compose restart
+    echo "🏗️  Rebuilding and restarting containers..."
+    docker-compose down
+    docker-compose up -d --build
 
     echo ""
     echo "⏳ Waiting for restart to complete..."
