@@ -5,7 +5,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import { PermissionService } from './services/permissions';
 import { SessionService } from './services/sessions';
-import { DocumentService } from './services/documents';
+
 import { db } from './services/database';
 
 const app = express();
@@ -53,7 +53,7 @@ const wss = new WebSocketServer({
 });
 
 interface WebSocketMessage {
-  type: 'authenticate' | 'join-document' | 'leave-document' | 'document-change' | 'cursor-update' | 'user-presence';
+  type: 'authenticate' | 'join-document' | 'leave-document' | 'document-change' | 'character-change' | 'cursor-update' | 'user-presence';
   documentId?: string;
   userId?: string;
   userEmail?: string;
@@ -61,6 +61,12 @@ interface WebSocketMessage {
   userImage?: string;
   shareToken?: string;
   data?: any;
+}
+
+interface CharacterChange {
+  position: number;
+  character: string;
+  operation: 'insert' | 'delete';
 }
 
 interface ConnectedClient {
@@ -153,6 +159,9 @@ class CollaborationWebSocketServer {
         case 'document-change':
           await this.handleDocumentChange(ws, message);
           break;
+        case 'character-change':
+          await this.handleCharacterChange(ws, message);
+          break;
         case 'cursor-update':
           await this.handleCursorUpdate(ws, message);
           break;
@@ -171,20 +180,34 @@ class CollaborationWebSocketServer {
 
   private async authenticateClient(ws: WebSocket, message: WebSocketMessage): Promise<boolean> {
     try {
+      console.log(`🔐 STARTING authenticateClient function`);
+      console.log(`🔐 Authenticating client:`, {
+        userEmail: message.userEmail,
+        userId: message.userId,
+        shareToken: message.shareToken ? 'present' : 'none',
+        documentId: message.documentId
+      });
+
       if (!message.userEmail || !message.userId) {
         console.log('❌ Missing required fields for authentication');
         return false;
       }
 
+      console.log(`🔍 DEBUG: About to check guest detection for email: ${message.userEmail}`);
       const isGuestUser = message.userEmail.includes('guest_') && message.userEmail.includes('@example.com');
+      console.log(`👤 User type detected: ${isGuestUser ? 'GUEST' : 'AUTHENTICATED'} for email: ${message.userEmail}`);
+      console.log(`🔍 Guest detection details: contains 'guest_': ${message.userEmail.includes('guest_')}, contains '@example.com': ${message.userEmail.includes('@example.com')}`);
+      console.log(`🔍 Full message details:`, JSON.stringify(message, null, 2));
 
       if (isGuestUser) {
         // For guest users, validate share token instead of user email
+        console.log(`🔍 Guest authentication details: shareToken: '${message.shareToken}', documentId: '${message.documentId}'`);
         if (!message.shareToken || !message.documentId) {
           console.log('❌ Missing share token or document ID for guest authentication');
           return false;
         }
 
+        console.log(`🔍 Validating guest access for document ${message.documentId} with token ${message.shareToken}`);
         const guestAccess = await PermissionService.validateGuestAccess(message.documentId, message.shareToken);
         if (!guestAccess.hasAccess) {
           console.log('❌ Guest access denied for token:', message.shareToken);
@@ -194,11 +217,13 @@ class CollaborationWebSocketServer {
         console.log('✅ Guest user authenticated with token:', message.shareToken);
       } else {
         // For regular users, validate user email
+        console.log(`🔍 Validating authenticated user: ${message.userEmail}`);
         const userValid = await PermissionService.validateUser(message.userEmail);
         if (!userValid) {
           console.log('❌ User validation failed for:', message.userEmail);
           return false;
         }
+        console.log('✅ Authenticated user validated:', message.userEmail);
       }
 
       const clientId = this.getClientId(ws);
@@ -213,6 +238,11 @@ class CollaborationWebSocketServer {
       };
 
       this.clients.set(clientId, client);
+      console.log(`✅ Client authenticated and stored:`, {
+        clientId,
+        userEmail: message.userEmail,
+        documentId: message.documentId
+      });
       return true;
     } catch (error) {
       console.error('Authentication error:', error);
@@ -230,7 +260,9 @@ class CollaborationWebSocketServer {
         return;
       }
 
+      console.log(`🔍 About to call authenticateClient for user: ${message.userEmail}`);
       const authenticated = await this.authenticateClient(ws, message);
+      console.log(`🔍 authenticateClient returned: ${authenticated} for user: ${message.userEmail}`);
 
       if (authenticated) {
         console.log(`✅ User ${message.userEmail} authenticated successfully`);
@@ -253,6 +285,10 @@ class CollaborationWebSocketServer {
       }
     } catch (error) {
       console.error('❌ Error during authentication:', error);
+      if (error instanceof Error) {
+        console.error('❌ Error stack:', error.stack);
+        console.error('❌ Error message:', error.message);
+      }
       this.sendError(ws, 'Authentication error');
     }
   }
@@ -295,7 +331,19 @@ class CollaborationWebSocketServer {
 
       client.sessionId = session.id;
 
+      // Send current active users list to the newly joined client
+      const currentUsers = this.getDocumentClients(message.documentId);
+      if (currentUsers.length > 1) { // More than just this user
+        console.log(`📨 Sending current users list to ${message.userEmail}: ${currentUsers.length - 1} existing users`);
+        this.sendToClient(ws, {
+          type: 'current-users',
+          users: currentUsers.filter(user => user.clientId !== clientId), // Exclude themselves
+          timestamp: new Date().toISOString(),
+        });
+      }
+
       // Send user-joined message to the connecting client
+      console.log(`📨 Sending user-joined to client: ${message.userEmail}`);
       this.sendToClient(ws, {
         type: 'user-joined',
         userId: message.userId,
@@ -308,6 +356,7 @@ class CollaborationWebSocketServer {
       });
 
       // Broadcast user-joined to other clients in the document (excluding sender)
+      console.log(`📡 Broadcasting user-joined to document ${message.documentId}: ${message.userEmail}`);
       this.broadcastToDocument(message.documentId, {
         type: 'user-joined',
         userId: message.userId,
@@ -358,7 +407,13 @@ class CollaborationWebSocketServer {
 
   private async handleDocumentChange(ws: WebSocket, message: WebSocketMessage) {
     try {
+      // Special logging for delete operations
+      if (message.data?.operation?.type === "delete") {
+        console.log(`🗑️ Server: Delete operation received - pos: ${message.data.operation.position}, len: ${message.data.operation.length}`);
+      }
+
       if (!message.documentId || !message.userEmail || !message.userId) {
+        console.error("❌ Server: Missing required fields for document change");
         this.sendError(ws, 'Missing required fields');
         return;
       }
@@ -369,7 +424,15 @@ class CollaborationWebSocketServer {
         'editor'
       );
 
+      console.log("🔐 Server: Document permission check result", {
+        documentId: message.documentId,
+        userEmail: message.userEmail,
+        hasAccess: permission.hasAccess,
+        permission: permission.permission
+      });
+
       if (!permission.hasAccess) {
+        console.error("❌ Server: No edit permission for document change");
         this.sendError(ws, 'No edit permission for document');
         return;
       }
@@ -377,27 +440,116 @@ class CollaborationWebSocketServer {
       const clientId = this.getClientId(ws);
       const client = this.clients.get(clientId);
 
-      if (client && client.sessionId && message.data) {
-        await DocumentService.addDocumentChange(
-          message.documentId,
-          client.sessionId,
-          message.userId,
-          message.data.version,
-          message.data.operation
-        );
+      console.log("👤 Server: Client info for document change", {
+        clientId,
+        hasClient: !!client,
+        hasSessionId: !!client?.sessionId,
+        hasData: !!message.data
+      });
+
+      // Handle sync requests specially
+      if (message.data?.operation?.type === "sync-request") {
+        console.log("[bug1] 🔄 Server: Received sync request - requesting document state from database");
+
+        // For sync requests, we need to get the current document state
+        // Since the WebSocket server doesn't have direct DB access, we'll broadcast to all clients
+        // and hope one of them has the correct state to respond
+        console.log("[bug1] 📡 Server: Broadcasting sync request to all clients");
+        this.broadcastToDocument(message.documentId, {
+          type: 'document-change',
+          userId: message.userId,
+          userEmail: message.userEmail,
+          data: {
+            operation: {
+              type: "sync-request",
+              content: message.data.operation.content,
+              timestamp: new Date().toISOString(),
+            }
+          },
+          timestamp: new Date().toISOString(),
+        }, ws); // Exclude the sender
+
+        console.log("[bug1] ✅ Server: Sync request broadcasted - waiting for response");
+        return; // Don't continue with normal broadcast
       }
 
-      this.broadcastToDocument(message.documentId, {
+      // Document persistence is handled by the main backend API
+      // WebSocket server only broadcasts real-time updates
+
+      const broadcastMessage = {
         type: 'document-change',
         userId: message.userId,
         userEmail: message.userEmail,
         data: message.data,
         timestamp: new Date().toISOString(),
-      });
+      };
+
+      this.broadcastToDocument(message.documentId, broadcastMessage, ws); // Exclude the sender
 
     } catch (error) {
-      console.error('Error handling document change:', error);
+      console.error('❌ Server: Error handling document change:', error);
       this.sendError(ws, 'Failed to process document change');
+    }
+  }
+
+  private async handleCharacterChange(ws: WebSocket, message: WebSocketMessage) {
+    try {
+      console.log("🔤 Server: Received character change", {
+        documentId: message.documentId,
+        userId: message.userId,
+        userEmail: message.userEmail,
+        data: message.data
+      });
+
+      if (!message.documentId || !message.userEmail || !message.userId) {
+        console.error("❌ Server: Missing required fields for character change");
+        this.sendError(ws, 'Missing required fields');
+        return;
+      }
+
+      // Check if user has edit permission
+      const permission = await PermissionService.checkDocumentPermission(
+        message.documentId,
+        message.userEmail,
+        'editor'
+      );
+
+      console.log("🔐 Server: Character change permission check result", {
+        documentId: message.documentId,
+        userEmail: message.userEmail,
+        hasAccess: permission.hasAccess,
+        permission: permission.permission
+      });
+
+      if (!permission.hasAccess) {
+        console.log("❌ Server: No edit permission for character change");
+        this.sendError(ws, 'No edit permission for document');
+        return;
+      }
+
+      // Validate character change data
+      if (!message.data || typeof message.data.position !== 'number' ||
+          typeof message.data.character !== 'string' ||
+          !['insert', 'delete'].includes(message.data.operation)) {
+        console.log("❌ Server: Invalid character change data");
+        this.sendError(ws, 'Invalid character change data');
+        return;
+      }
+
+      // Broadcast character change to all clients in the document room
+      console.log("📡 Server: Broadcasting character change to other clients");
+      this.broadcastToDocument(message.documentId, {
+        type: 'character-change',
+        userId: message.userId,
+        userEmail: message.userEmail,
+        data: message.data,
+        timestamp: new Date().toISOString(),
+      }, ws); // Exclude the sender from receiving their own character changes
+      console.log("✅ Server: Character change broadcasted successfully");
+
+    } catch (error) {
+      console.error('❌ Server: Error handling character change:', error);
+      this.sendError(ws, 'Failed to process character change');
     }
   }
 
@@ -416,7 +568,7 @@ class CollaborationWebSocketServer {
         userEmail: message.userEmail,
         userName: message.userName,
         userImage: message.userImage,
-        data: message.data,
+        data: { cursor: message.data?.cursor || message.data }, // Ensure cursor data is nested
         timestamp: new Date().toISOString(),
       });
     }
@@ -440,7 +592,11 @@ class CollaborationWebSocketServer {
     const clientId = this.getClientId(ws);
     const client = this.clients.get(clientId);
 
+    console.log(`🔌 Handling client disconnect for clientId: ${clientId}`);
+
     if (client) {
+      console.log(`🔌 Disconnecting user: ${client.userEmail} from document: ${client.documentId}`);
+
       if (client.sessionId) {
         SessionService.removeSession(client.sessionId).catch(console.error);
       }
@@ -448,6 +604,7 @@ class CollaborationWebSocketServer {
       this.removeFromDocumentRoom(client.documentId, clientId);
       this.clients.delete(clientId);
 
+      console.log(`📡 Broadcasting user-left for ${client.userEmail} to document ${client.documentId}`);
       this.broadcastToDocument(client.documentId, {
         type: 'user-left',
         userId: client.userId,
@@ -456,6 +613,8 @@ class CollaborationWebSocketServer {
         userImage: client.userImage,
         timestamp: new Date().toISOString(),
       });
+    } else {
+      console.log(`🔌 Client ${clientId} not found in clients map during disconnect`);
     }
   }
 
@@ -476,15 +635,46 @@ class CollaborationWebSocketServer {
     }
   }
 
+  private getDocumentClients(documentId: string): Array<{ clientId: string; userEmail: string; userName?: string; userImage?: string }> {
+    const room = this.documentRooms.get(documentId);
+    if (!room) {
+      return [];
+    }
+
+    const clients: Array<{ clientId: string; userEmail: string; userName?: string; userImage?: string }> = [];
+    const seenEmails = new Set<string>();
+
+    room.forEach(clientId => {
+      const client = this.clients.get(clientId);
+      if (client && !seenEmails.has(client.userEmail)) {
+        clients.push({
+          clientId,
+          userEmail: client.userEmail,
+          userName: client.userName,
+          userImage: client.userImage,
+        });
+        seenEmails.add(client.userEmail);
+      }
+    });
+
+    return clients;
+  }
+
   private broadcastToDocument(documentId: string, message: any, excludeWs?: WebSocket) {
     const room = this.documentRooms.get(documentId);
-    if (!room) return;
+    if (!room) {
+      console.log(`[bug1] 📡 No room found for document ${documentId}`);
+      return;
+    }
 
     const messageStr = JSON.stringify(message);
+
+    let sentCount = 0;
     room.forEach(clientId => {
       const client = this.clients.get(clientId);
       if (client && client.ws.readyState === WebSocket.OPEN && client.ws !== excludeWs) {
         client.ws.send(messageStr);
+        sentCount++;
       }
     });
   }
@@ -520,8 +710,8 @@ new CollaborationWebSocketServer();
 // Start server
 const PORT = process.env.PORT || 3100;
 server.listen(PORT, () => {
-  console.log(`WebSocket server running on port ${PORT}`);
-  console.log(`Health check available at http://localhost:${PORT}/health`);
+  console.log(`✅ WebSocket server running on port ${PORT}`);
+  console.log(`📊 Health check available at http://localhost:${PORT}/health`);
 });
 
 // Graceful shutdown
