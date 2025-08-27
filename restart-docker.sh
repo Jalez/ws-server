@@ -54,12 +54,14 @@ else
     echo "ℹ️  Containers are stopped. Starting them instead..."
     echo ""
 
-    # Check if DATABASE_URL is set
-    if [ -z "$DATABASE_URL" ]; then
+    # Check if DATABASE_URL is set (either in shell or .env file)
+    if [ -z "$DATABASE_URL" ] && [ ! -f ".env" ]; then
         echo "⚠️  DATABASE_URL is not set. Using example value for demonstration."
         echo "   Set your actual DATABASE_URL before running in production:"
         echo "   export DATABASE_URL='postgresql://username:password@host:port/database'"
         export DATABASE_URL="postgresql://postgres:password@host.docker.internal:5432/websocket_db"
+    elif [ -z "$DATABASE_URL" ] && [ -f ".env" ]; then
+        echo "✅ Using DATABASE_URL from .env file"
     fi
 
     # Set default values for other environment variables
