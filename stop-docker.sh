@@ -5,6 +5,38 @@
 
 echo "🛑 Stopping WebSocket Server..."
 
+# Check for processes using port 3100
+echo "🔍 Checking for processes using port 3100..."
+PORT_PROCESS=$(lsof -i :3100 -t 2>/dev/null)
+
+if [ ! -z "$PORT_PROCESS" ]; then
+    echo "⚠️  Found process(es) using port 3100:"
+    lsof -i :3100
+    echo ""
+
+    read -p "🛑 Would you like to stop the process(es) using port 3100? (y/n): " -n 1 -r
+    echo ""
+
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        echo "🛑 Force killing process(es) using port 3100..."
+        for PID in $PORT_PROCESS; do
+            if kill -KILL "$PID" 2>/dev/null; then
+                echo "   ✅ Process $PID force killed"
+            else
+                echo "   ❌ Failed to kill process $PID"
+            fi
+        done
+        echo "✅ Port 3100 cleanup completed!"
+        sleep 1  # Brief pause to ensure cleanup
+    else
+        echo "ℹ️  Leaving process(es) running on port 3100"
+    fi
+    echo ""
+else
+    echo "✅ No processes found using port 3100"
+    echo ""
+fi
+
 # Check if containers are running
 if ! docker-compose ps | grep -q "Up"; then
     echo "ℹ️  No running containers found. The server may already be stopped."
