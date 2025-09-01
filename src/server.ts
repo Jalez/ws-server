@@ -6,9 +6,10 @@ import { Server as SocketIOServer } from 'socket.io';
 
 import { db } from './services/database';
 import { authenticateSocket } from './middleware/auth';
-import { DocumentHandlers } from './handlers/documentHandlers';
+import { CursorPayload, DocumentHandlers } from './handlers/documentHandlers';
 import { CharacterHandlers } from './handlers/characterHandlers';
 import { SocketMessage } from './types/socket';
+import { IncomingChange } from './handlers/documentHandlers';
 
 const app = express();
 const server = createServer(app);
@@ -73,7 +74,7 @@ io.on('connection', (socket) => {
         userEmail: data.userEmail,
         userName: data.userName,
         userImage: data.userImage,
-        shareToken: data.shareToken,
+
         timestamp: new Date().toISOString()
       });
     } catch (error) {
@@ -89,10 +90,10 @@ io.on('connection', (socket) => {
   socket.on('leave-document', (data: SocketMessage) =>
     documentHandlers.handleLeaveDocument(socket, data));
 
-  socket.on('document-change', (data: SocketMessage) =>
+  socket.on('document-change', (data: IncomingChange) =>
     documentHandlers.handleDocumentChange(socket, data));
 
-  socket.on('cursor-update', (data: SocketMessage) =>
+  socket.on('cursor-update', (data: CursorPayload) =>
     documentHandlers.handleCursorUpdate(socket, data));
 
   socket.on('user-presence', (data: SocketMessage) =>
