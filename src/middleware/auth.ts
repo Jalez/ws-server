@@ -20,28 +20,29 @@ export const authenticateSocket = async (socket: Socket, next: (err?: Error) => 
       return next(new Error('Missing user credentials'));
     }
 
-    // For guest users, validate share token if provided
-    if (userEmail.includes('guest_') && userEmail.includes('@example.com')) {
-      if (!token) {
-        console.log('❌ Missing share token for guest authentication');
-        return next(new Error('Share token required for guest access'));
-      }
-
+    // For guest users, validate access via allow_guest_access flag
+    if (userEmail.includes('guest-') && userEmail.includes('@scriba.app')) {
       const documentId = socket.handshake.auth?.documentId;
       if (!documentId) {
         console.log('❌ Missing document ID for guest authentication');
         return next(new Error('Document ID required for guest access'));
       }
 
-      const guestAccess = await PermissionService.validateGuestAccess(documentId, token);
+      // Validate guest access using the simple allow_guest_access flag
+      const guestAccess = await PermissionService.checkDocumentPermission(
+        documentId,
+        userEmail,
+        'viewer'
+      );
+
       if (!guestAccess.hasAccess) {
-        console.log('❌ Guest access denied for token:', token);
-        return next(new Error('Invalid share token'));
+        console.log('❌ Guest access denied for document:', documentId, 'user:', userEmail);
+        return next(new Error('Guest access denied'));
       }
 
-      console.log('✅ Guest user authenticated with token:', token);
+      console.log('✅ Guest user authenticated for document:', documentId, 'via allow_guest_access');
     } else {
-      // For regular users, validate user email
+      // For regular users, validate user email (no token required)
       const userValid = await PermissionService.validateUser(userEmail);
       if (!userValid) {
         console.log('❌ User validation failed for:', userEmail);
@@ -55,7 +56,7 @@ export const authenticateSocket = async (socket: Socket, next: (err?: Error) => 
     (socket.data as any).userEmail = userEmail;
     (socket.data as any).userName = socket.handshake.auth?.userName || '';
     (socket.data as any).userImage = socket.handshake.auth?.userImage;
-    (socket.data as any).shareToken = token;
+
 
     console.log(`✅ Socket authenticated for ${userEmail} (${socket.id})`);
     next();

@@ -26,7 +26,7 @@ export class PermissionService {
       }
 
       // Check if this is a guest user who has already been authenticated
-      if (userEmail.includes('guest_') && userEmail.includes('@example.com')) {
+      if (userEmail.includes('guest-') && userEmail.includes('@scriba.app')) {
         console.log(`👤 Guest user ${userEmail} granted ${requiredPermission} access to document ${documentId}`);
         return {
           hasAccess: true,
@@ -89,7 +89,7 @@ export class PermissionService {
       }
 
       // Check if this is a guest user
-      if (userEmail.includes('guest_') && userEmail.includes('@example.com')) {
+      if (userEmail.includes('guest-') && userEmail.includes('@scriba.app')) {
         console.log(`👤 Guest user detected: ${userEmail}, allowing access`);
         return true;
       }
@@ -106,71 +106,5 @@ export class PermissionService {
     }
   }
 
-  static async validateGuestAccess(documentId: string, shareToken: string): Promise<{ hasAccess: boolean; permission: 'viewer' | 'editor' | 'owner' }> {
-    try {
-      console.log(`🔍 Validating guest access for document ${documentId} with token: ${shareToken}`);
 
-      // Check if we're in test mode (skip database validation)
-      if (process.env.SKIP_DB_AUTH === 'true') {
-        console.log(`🔧 Test mode: Granting guest access to document ${documentId} with token ${shareToken}`);
-        return { hasAccess: true, permission: 'viewer' };
-      }
-
-      // First, let's query all document shares for this document to debug
-      console.log(`🔍 Querying all document shares for ${documentId}`);
-      const allSharesResult = await db.query(
-        `SELECT id, document_id, shared_user_email, share_token, allow_guest_access, permission
-         FROM document_shares
-         WHERE document_id = $1`,
-        [documentId]
-      );
-
-      console.log(`🔍 Found ${allSharesResult.rows.length} document shares:`, allSharesResult.rows);
-
-      // First, check if the document has public guest access enabled (no specific token required)
-      const publicAccessResult = await db.query(
-        `SELECT allow_guest_access, permission FROM document_shares
-         WHERE document_id = $1 AND shared_user_email IS NULL AND allow_guest_access = true`,
-        [documentId]
-      );
-
-      console.log(`🔍 Public access query result: ${publicAccessResult.rows.length} rows`);
-
-      if (publicAccessResult.rows.length > 0) {
-        const publicShare = publicAccessResult.rows[0];
-        console.log(`✅ Public guest access validated for document ${documentId} with permission ${publicShare.permission}`);
-        return {
-          hasAccess: true,
-          permission: publicShare.permission || 'viewer'
-        };
-      }
-
-      // Then, check if the document has guest access enabled with the provided token
-      if (shareToken) {
-        console.log(`🔍 Checking token-based access with token: ${shareToken}`);
-        const tokenAccessResult = await db.query(
-          `SELECT allow_guest_access, permission FROM document_shares
-           WHERE document_id = $1 AND share_token = $2 AND allow_guest_access = true`,
-          [documentId, shareToken]
-        );
-
-        console.log(`🔍 Token access query result: ${tokenAccessResult.rows.length} rows`);
-
-        if (tokenAccessResult.rows.length > 0) {
-          const tokenShare = tokenAccessResult.rows[0];
-          console.log(`✅ Token-based guest access validated for document ${documentId} with token ${shareToken} and permission ${tokenShare.permission}`);
-          return {
-            hasAccess: true,
-            permission: tokenShare.permission || 'viewer'
-          };
-        }
-      }
-
-      console.log(`❌ Guest access denied for document ${documentId} with token ${shareToken || 'none'}`);
-      return { hasAccess: false, permission: 'viewer' };
-    } catch (error) {
-      console.error('❌ Error validating guest access:', error);
-      return { hasAccess: false, permission: 'viewer' };
-    }
-  }
 }
