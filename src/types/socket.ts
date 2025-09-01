@@ -7,8 +7,9 @@ export interface SocketMessage {
   userEmail?: string;
   userName?: string;
   userImage?: string;
-  shareToken?: string;
+
   data?: any;
+  operation?: any; // For document change operations
 }
 
 export interface CharacterChange {
@@ -43,7 +44,7 @@ export interface ExtendedSocketData {
   userEmail?: string;
   userName?: string;
   userImage?: string;
-  shareToken?: string;
+
   documentId?: string;
   sessionId?: string;
 }

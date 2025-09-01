@@ -4,12 +4,40 @@ import { PermissionService } from '../services/permissions';
 import { SessionService } from '../services/sessions';
 import { SocketMessage } from '../types/socket';
 
+type JSONStep = any; // or: ReturnType<Step["toJSON"]>
+export interface IncomingChange {
+  documentId: string;
+  userId: string;
+  clientId: string;
+  version: number;
+  steps: JSONStep[];
+}
+
+export type CursorPayload = {
+  documentId: string;
+  clientId: string;
+  userId: string;
+  userName?: string;
+  color?: string;
+  anchor: number;   // selection anchor in sender's doc after their local tx
+  head: number;     // selection head in sender's doc after their local tx
+  ts: number;
+};
+
+interface OutgoingChange extends IncomingChange {
+  isAck?: boolean;       // true for echo back to sender (clear pending)
+  serverTs: string;      // optional server timestamp
+}
+
+
 export class DocumentHandlers {
   private io: Server;
 
   constructor(io: Server) {
     this.io = io;
   }
+
+  
 
   // Handle join-document message
   async handleJoinDocument(socket: Socket, data: SocketMessage) {
@@ -70,7 +98,7 @@ export class DocumentHandlers {
         userEmail: data.userEmail,
         userName: data.userName,
         userImage: data.userImage,
-        shareToken: data.shareToken,
+
         sessionId: session.id,
         timestamp: new Date().toISOString(),
       });
@@ -82,7 +110,7 @@ export class DocumentHandlers {
         userEmail: data.userEmail,
         userName: data.userName,
         userImage: data.userImage,
-        shareToken: data.shareToken,
+
         sessionId: session.id,
         timestamp: new Date().toISOString(),
       });
@@ -127,109 +155,65 @@ export class DocumentHandlers {
   }
 
   // Handle document-change message
-  async handleDocumentChange(socket: Socket, data: SocketMessage) {
+  async handleDocumentChange(socket: Socket, data: IncomingChange) {
     try {
-      // Special logging for delete operations
-      if (data.data?.operation?.type === "delete") {
-        console.log(`🗑️ Server: Delete operation received - pos: ${data.data.operation.position}, len: ${data.data.operation.length}`);
-      }
-
-      if (!data.documentId || !socket.data.userEmail || !socket.data.userId) {
-        socket.emit('error', { error: 'Missing required fields' });
+      // Basic guards
+      if (!data?.documentId || !data?.clientId || !Array.isArray(data?.steps)) {
+        socket.emit("error", { error: "Invalid change payload" });
         return;
       }
-
-      const permission = await PermissionService.checkDocumentPermission(
+      if (!socket.data?.userEmail || !socket.data?.userId) {
+        socket.emit("error", { error: "Missing user identity" });
+        return;
+      }
+  
+      // Permission check (editor access)
+      const perm = await PermissionService.checkDocumentPermission(
         data.documentId,
         socket.data.userEmail,
-        'editor'
+        "editor"
       );
-
-      console.log("🔐 Server: Document permission check result", {
-        documentId: data.documentId,
-        userEmail: socket.data.userEmail,
-        hasAccess: permission.hasAccess,
-        permission: permission.permission
-      });
-
-      if (!permission.hasAccess) {
-        console.error("❌ Server: No edit permission for document change");
-        socket.emit('error', { error: 'No edit permission for document' });
+      if (!perm?.hasAccess) {
+        socket.emit("error", { error: "No edit permission for document" });
         return;
       }
-
-      console.log("👤 Server: Client info for document change", {
-        socketId: socket.id,
-        hasSessionId: !!socket.data.sessionId,
-        hasData: !!data.data
-      });
-
-      // Handle sync requests specially
-      if (data.data?.operation?.type === "sync-request") {
-        console.log("[bug1] 🔄 Server: Received sync request - requesting document state from database");
-
-        // For sync requests, we need to get the current document state
-        // Since the WebSocket server doesn't have direct DB access, we'll broadcast to all clients
-        // and hope one of them has the correct state to respond
-        console.log("[bug1] 📡 Server: Broadcasting sync request to all clients");
-        socket.to(data.documentId).emit('document-change', {
-          userId: socket.data.userId,
-          userEmail: socket.data.userEmail,
-          data: {
-            operation: {
-              type: "sync-request",
-              content: data.data.operation.content,
-              timestamp: new Date().toISOString(),
-            }
-          },
-          timestamp: new Date().toISOString(),
-        });
-
-        console.log("[bug1] ✅ Server: Sync request broadcasted - waiting for response");
-        return; // Don't continue with normal broadcast
-      }
-
-      // Document persistence is handled by the main backend API
-      // WebSocket server only broadcasts real-time updates
-
-      const broadcastMessage = {
-        type: 'document-change',
-        userId: socket.data.userId,
-        userEmail: socket.data.userEmail,
-        data: data.data,
-        timestamp: new Date().toISOString(),
+  
+      // Compose outbound message
+      const msg: OutgoingChange = {
+        documentId: data.documentId,
+        userId: socket.data.userId,     // authoritative from session
+        clientId: data.clientId,
+        version: data.version ?? 0,
+        steps: data.steps,
+        serverTs: new Date().toISOString(),
       };
-
-      socket.to(data.documentId).emit('document-change', broadcastMessage); // Exclude the sender
-
-    } catch (error) {
-      console.error('❌ Server: Error handling document change:', error);
-      socket.emit('error', { error: 'Failed to process document change' });
+  
+      // 1) ACK the sender so they can clear pending local steps
+      socket.emit("document-change", { ...msg, isAck: true });
+  
+      // 2) Broadcast to everyone else in the document room
+      socket.to(data.documentId).emit("document-change", msg);
+  
+    } catch (err) {
+      console.error("❌ Server: document-change error:", err);
+      socket.emit("error", { error: "Failed to process document change" });
     }
   }
 
   // Handle cursor-update message
-  async handleCursorUpdate(socket: Socket, data: SocketMessage) {
+  async handleCursorUpdate(socket: Socket, data: CursorPayload) {
     try {
-      if (socket.data.sessionId) {
-        await SessionService.updateSessionActivity(socket.data.sessionId, data.data?.cursor);
-      }
-
-      if (data.documentId) {
-        socket.to(data.documentId).emit('cursor-update', {
-          userId: socket.data.userId,
-          userEmail: socket.data.userEmail,
-          userName: socket.data.userName,
-          userImage: socket.data.userImage,
-          data: { cursor: data.data?.cursor || data.data },
-          timestamp: new Date().toISOString(),
-        });
-      }
-    } catch (error) {
-      console.error('Error handling cursor update:', error);
+      if (!data?.documentId || !data?.clientId) return;
+      // optional: permission check like in steps handler
+      // await PermissionService.checkDocumentPermission(...)
+  
+      // Do NOT echo to sender; only broadcast to room
+      socket.to(data.documentId).emit("cursor-update", data);
+    } catch (e) {
+      console.error("cursor-update error:", e);
     }
   }
-
+  
   // Handle user-presence message
   async handleUserPresence(socket: Socket, data: SocketMessage) {
     try {
